@@ -2,19 +2,26 @@ import asyncio
 import random
 import hashlib
 import re
+import os
 from datetime import datetime, timezone, timedelta
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ==================== КОНФИГ ====================
-TOKEN = "8527906938:AAG97Gj3RuMhjOMWLHZ7nFX4GqjK06pOlFI"
+TOKEN = os.getenv("TOKEN", "8527906938:AAG97Gj3RuMhjOMWLHZ7nFX4GqjK06pOlFI")
 bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
 # ==================== ДАННЫЕ ====================
-user_last_command = {}        # user_id -> timestamp последней команды
-user_coin_history = {}        # user_id -> list последних бросков монетки
-user_num_history = {}         # user_id -> list последних чисел
-user_ship_timestamps = {}     # user_id -> list timestamps шипов
+user_last_command = {}
+user_coin_history = {}
+user_num_history = {}
+user_ship_timestamps = {}
 
 COOLDOWN_SEC = 3
 MOSCOW_TZ = timezone(timedelta(hours=3))
@@ -33,7 +40,6 @@ def is_cooldown(user_id):
     return False
 
 def hash_names(name1, name2):
-    """Детерминированный хеш для шиппера."""
     names = sorted([name1.lower(), name2.lower()])
     combined = f"{names[0]}_{names[1]}"
     hash_val = int(hashlib.md5(combined.encode()).hexdigest(), 16)
@@ -60,7 +66,6 @@ def get_ship_verdict(percent):
         return "Идеальная совместимость."
 
 def get_digit_easter_egg(num):
-    """Цифровые пасхалки."""
     eggs = {
         52: "Пятьдесят два.",
         67: "Six seven. 🤲",
@@ -74,7 +79,6 @@ def get_digit_easter_egg(num):
     return eggs.get(num, "")
 
 def get_time_easter_egg():
-    """Временные пасхалки."""
     now = get_moscow_time()
     hour = now.hour
     minute = now.minute
@@ -90,7 +94,6 @@ def get_time_easter_egg():
     return ""
 
 def get_date_easter_egg():
-    """Датовые пасхалки."""
     now = get_moscow_time()
     month = now.month
     day = now.day
@@ -108,7 +111,6 @@ def get_date_easter_egg():
     return ""
 
 def get_rare_easter_egg():
-    """Случайная редкая пасхалка (1% шанс)."""
     roll = random.randint(1, 100)
     if roll == 1:
         return "glitch"
@@ -145,18 +147,19 @@ def get_coin_series(user_id):
     return count, ""
 
 def update_num_history(user_id, num):
-    if user_id not in num_history:
-        num_history[user_id] = []
-    num_history[user_id].append(num)
-    if len(num_history[user_id]) > 10:
-        num_history[user_id] = num_history[user_id][-10:]
+    if user_id not in user_num_history:
+        user_num_history[user_id] = []
+    user_num_history[user_id].append(num)
+    if len(user_num_history[user_id]) > 10:
+        user_num_history[user_id] = user_num_history[user_id][-10:]
 
 def check_num_spam(user_id):
-    history = num_history.get(user_id, [])
+    history = user_num_history.get(user_id, [])
     if len(history) >= 3:
-        recent = history[-3:]
         now = datetime.now().timestamp()
-        if now - user_last_command.get(f"{user_id}_num", 0) < 10:
+        last_time = user_last_command.get(f"{user_id}_num", 0)
+        if now - last_time < 10:
+            user_last_command[f"{user_id}_num"] = now
             return "Ты ищешь что-то конкретное?"
     user_last_command[f"{user_id}_num"] = datetime.now().timestamp()
     return ""
@@ -171,30 +174,109 @@ def update_ship_timestamps(user_id):
         return "Пятый шип за минуту. Отдохни."
     return ""
 
+def generate_fish_text(length=20):
+    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:,.<>?/~`"
+    return ''.join(random.choice(chars) for _ in range(length))
+
+# ==================== КЛАВИАТУРА МЕНЮ ====================
+
+def get_menu_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🪙 Монетка", callback_data="flip"),
+        InlineKeyboardButton(text="🔢 Число", callback_data="num"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="💘 Шипперим", callback_data="ship"),
+        InlineKeyboardButton(text="🎲 Куб", callback_data="dice"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎰 Слоты", callback_data="slot"),
+    )
+    return builder.as_markup()
+
+# ==================== ОБРАБОТЧИКИ КОМАНД ====================
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer("🎲 RND Bot запущен!\n/menu — список режимов")
+
+@dp.message(Command("menu"))
+@dp.message(F.text == "меню")
+async def cmd_menu(message: Message):
+    await message.answer("🎲 RND BOT", reply_markup=get_menu_keyboard())
+
+@dp.callback_query(F.data == "flip")
+async def cb_flip(callback: types.CallbackQuery):
+    await callback.answer()
+    await flip_command(callback.message)
+
+@dp.callback_query(F.data == "num")
+async def cb_num(callback: types.CallbackQuery):
+    await callback.answer()
+    await num_command(callback.message, "1-100")
+
+@dp.callback_query(F.data == "ship")
+async def cb_ship(callback: types.CallbackQuery):
+    await callback.answer()
+    await ship_command(callback.message, "")
+
+@dp.callback_query(F.data == "dice")
+async def cb_dice(callback: types.CallbackQuery):
+    await callback.answer()
+    await dice_command(callback.message)
+
+@dp.callback_query(F.data == "slot")
+async def cb_slot(callback: types.CallbackQuery):
+    await callback.answer()
+    await slot_command(callback.message)
+
+@dp.message(Command("flip"))
+@dp.message(F.text.in_(["монетка", "монета"]))
+async def cmd_flip(message: Message):
+    await flip_command(message)
+
+@dp.message(Command("num"))
+@dp.message(F.text == "рандом число")
+async def cmd_num(message: Message):
+    await num_command(message, "1-100")
+
+@dp.message(Command("ship"))
+@dp.message(F.text.in_(["шипперим", "шип"]))
+async def cmd_ship(message: Message):
+    await ship_command(message, "")
+
+@dp.message(Command("dice"))
+@dp.message(F.text.in_(["куб", "кубик"]))
+async def cmd_dice(message: Message):
+    await dice_command(message)
+
+@dp.message(Command("slot"))
+@dp.message(F.text.in_(["слоты", "крутить"]))
+async def cmd_slot(message: Message):
+    await slot_command(message)
+
 # ==================== РЕЖИМЫ ====================
 
-async def flip_command(chat_id, user_id, extra_text=""):
+async def flip_command(message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
     if is_cooldown(user_id):
-        msg = await bot.send_message(chat_id, "Подожди 3 секунды.")
+        msg = await message.answer("Подожди 3 секунды.")
         await asyncio.sleep(5)
-        try:
-            await bot.delete_message(chat_id, msg.message_id)
-        except TelegramError:
-            pass
+        await msg.delete()
         return
 
-    # Редкая пасхалка
     rare = get_rare_easter_egg()
+    date_egg = get_date_easter_egg()
 
     if rare == "shy":
-        msg = await bot.send_message(chat_id, "...")
+        msg = await message.answer("...")
         await asyncio.sleep(5)
-        # Продолжаем после паузы
     else:
-        msg = await bot.send_message(chat_id, "🎰 МОНЕТКА")
+        msg = await message.answer("🎰 МОНЕТКА")
 
-    # Определяем результат
-    date_egg = get_date_easter_egg()
     if date_egg == "april_fool":
         result = "Ребро"
     elif date_egg == "new_year":
@@ -208,23 +290,18 @@ async def flip_command(chat_id, user_id, extra_text=""):
         else:
             result = "Ребро"
 
-    # Серии
     update_coin_history(user_id, result)
     series_count, series_text = get_coin_series(user_id)
 
-    # Сборка ответа
     response = result
 
-    # Серийная пасхалка
     if series_text:
         response += f"\n{series_text}"
 
-    # Временная пасхалка
     time_egg = get_time_easter_egg()
     if time_egg:
         response += f"\n{time_egg}"
 
-    # Датовая пасхалка
     if date_egg == "new_year":
         response += "\nС новым годом. Новый бросок."
     elif date_egg == "april_fool":
@@ -232,49 +309,52 @@ async def flip_command(chat_id, user_id, extra_text=""):
     elif date_egg == "halloween":
         response += "\nТыква смотрит."
 
-    # Голос судьбы (капс)
     if rare == "caps":
         response = response.upper()
 
-    # Редактируем сообщение
-    await bot.edit_message_text(response, chat_id, msg.message_id)
+    await msg.edit_text(response)
 
 
-async def num_command(chat_id, user_id, min_val, max_val):
+async def num_command(message: Message, args_text=""):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
     if is_cooldown(user_id):
-        msg = await bot.send_message(chat_id, "Подожди 3 секунды.")
+        msg = await message.answer("Подожди 3 секунды.")
         await asyncio.sleep(5)
-        try:
-            await bot.delete_message(chat_id, msg.message_id)
-        except TelegramError:
-            pass
+        await msg.delete()
         return
 
     rare = get_rare_easter_egg()
     date_egg = get_date_easter_egg()
 
-    if rare == "shy":
-        msg = await bot.send_message(chat_id, "...")
-        await asyncio.sleep(5)
+    # Парсим диапазон из аргументов
+    match = re.match(r"(-?\d+)[-\s](-?\d+)", args_text)
+    if match:
+        min_val = int(match.group(1))
+        max_val = int(match.group(2))
     else:
-        msg = await bot.send_message(chat_id, "🎲 РАНДОМ ЧИСЛО")
+        min_val, max_val = 1, 100
 
-    # Проверка диапазона
     if min_val > max_val:
         min_val, max_val = max_val, min_val
 
-    # Дата: 31 декабря
+    if rare == "shy":
+        msg = await message.answer("...")
+        await asyncio.sleep(5)
+    else:
+        msg = await message.answer("🎲 РАНДОМ ЧИСЛО")
+
     if date_egg == "nye":
         next_year = get_moscow_time().year + 1
         num = next_year
     else:
         num = random.randint(min_val, max_val)
 
-    # Редкая пасхалка: двойной бросок
     if rare == "double":
         num2 = random.randint(min_val, max_val)
         response = f"Число: {num} и {num2}. Выбирай."
-        if min_val != 1 or max_val != 100:
+        if not (min_val == 1 and max_val == 100):
             response += f"\nДиапазон: {min_val} – {max_val}"
     else:
         if min_val == 1 and max_val == 100:
@@ -282,7 +362,6 @@ async def num_command(chat_id, user_id, min_val, max_val):
         else:
             response = f"Число: {num}\nДиапазон: {min_val} – {max_val}"
 
-        # Середина, минимум, максимум
         if num == min_val:
             response += "\nМинимум."
         elif num == max_val:
@@ -290,23 +369,19 @@ async def num_command(chat_id, user_id, min_val, max_val):
         elif (max_val - min_val) % 2 == 0 and num == (min_val + max_val) // 2:
             response += "\nРовно середина."
 
-    # Цифровая пасхалка
     digit_egg = get_digit_easter_egg(num)
     if digit_egg:
         response += f"\n{digit_egg}"
 
-    # Серийная проверка
     update_num_history(user_id, num)
     spam_text = check_num_spam(user_id)
     if spam_text:
         response += f"\n{spam_text}"
 
-    # Временная пасхалка
     time_egg = get_time_easter_egg()
     if time_egg:
         response += f"\n{time_egg}"
 
-    # Датовая пасхалка
     if date_egg == "nye":
         response += "\nСкоро."
     elif date_egg == "halloween":
@@ -315,126 +390,117 @@ async def num_command(chat_id, user_id, min_val, max_val):
     if rare == "caps":
         response = response.upper()
 
-    await bot.edit_message_text(response, chat_id, msg.message_id)
+    await msg.edit_text(response)
 
 
-async def ship_command(chat_id, user_id, target1=None, target2=None):
+async def ship_command(message: Message, args_text=""):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
     if chat_id == user_id:
-        await bot.send_message(chat_id, "Этот режим работает только в группе.")
+        await message.answer("Этот режим работает только в группе.")
         return
 
     if is_cooldown(user_id):
-        msg = await bot.send_message(chat_id, "Подожди 3 секунды.")
+        msg = await message.answer("Подожди 3 секунды.")
         await asyncio.sleep(5)
-        try:
-            await bot.delete_message(chat_id, msg.message_id)
-        except TelegramError:
-            pass
+        await msg.delete()
         return
 
     spam_text = update_ship_timestamps(user_id)
 
-    msg = await bot.send_message(chat_id, "💘 ШИППЕРИМ")
+    msg = await message.answer("💘 ШИППЕРИМ")
 
-    # Определяем цель
-    if target1 and target1.startswith("@"):
-        name1 = target1[1:]
+    # Парсим имена
+    parts = args_text.split()
+    if parts:
+        name1 = parts[0].lstrip("@")
+        name2 = parts[1] if len(parts) > 1 else f"user_{random.randint(1000, 9999)}"
     else:
-        # Случайный участник
         name1 = f"user_{random.randint(1000, 9999)}"
-
-    if target2 and target2.startswith("@"):
-        name2 = target2[1:]
-    elif target2:
-        name2 = target2
-    else:
         name2 = f"user_{random.randint(1000, 9999)}"
 
-    # Процент
-    if target1 and target2 and target1 == target2:
+    target1 = parts[0] if parts else ""
+    target2 = parts[1] if len(parts) > 1 else ""
+
+    if target1 and target2 and target1.lower() == target2.lower():
         percent = 100
-    elif target2 and target2.lower() in ["пицца", "pizza"]:
+    elif target2.lower() in ["пицца", "pizza"]:
         percent = 94
-    elif target2 and target2.lower() in ["понедельник", "monday"]:
+    elif target2.lower() in ["понедельник", "monday"]:
         percent = 3
-    elif target2 and target2.lower() in ["сон", "sleep"]:
+    elif target2.lower() in ["сон", "sleep"]:
         percent = 99
-    elif target2 and target2.lower() in ["работа", "work"]:
+    elif target2.lower() in ["работа", "work"]:
         percent = 12
-    elif target2 and target2.lower() in ["зарплата", "salary"]:
+    elif target2.lower() in ["зарплата", "salary"]:
         percent = 88
-    elif target2 and target2.lower() in ["дедлайн", "deadline"]:
+    elif target2.lower() in ["дедлайн", "deadline"]:
         percent = 1
-    elif target2 and target2.lower() in ["выходные", "weekend"]:
+    elif target2.lower() in ["выходные", "weekend"]:
         percent = 97
-    elif target2 and target2.lower() in ["wi-fi", "wifi"]:
+    elif target2.lower() in ["wi-fi", "wifi"]:
         percent = 100
-    elif target2 and target2.lower() in ["бот", "bot"]:
+    elif target2.lower() in ["бот", "bot"]:
         percent = 50
     else:
         percent = hash_names(name1, name2)
 
     verdict = get_ship_verdict(percent)
-
     response = f"@{name1} + @{name2}\n{percent}%\n{verdict}"
 
-    # Нецифровые пасхалки для шиппера
-    if target2 and target2.lower() in ["пицца", "pizza"]:
+    # Пасхалки для шиппера
+    if target2.lower() in ["пицца", "pizza"]:
         response += "\nПицца любит всех."
-    elif target2 and target2.lower() in ["понедельник", "monday"]:
+    elif target2.lower() in ["понедельник", "monday"]:
         response += "\nПонедельник не любит никого."
-    elif target1 and target2 and target1 == target2:
+    elif target1 and target2 and target1.lower() == target2.lower():
         response += "\nСам с собой. Идеально."
-    elif target2 and target2.lower() in ["сон", "sleep"]:
+    elif target2.lower() in ["сон", "sleep"]:
         response += "\nСон — это святое."
-    elif target2 and target2.lower() in ["работа", "work"]:
+    elif target2.lower() in ["работа", "work"]:
         response += "\nРабота не любит никого."
-    elif target2 and target2.lower() in ["зарплата", "salary"]:
+    elif target2.lower() in ["зарплата", "salary"]:
         response += "\nЖди."
-    elif target2 and target2.lower() in ["дедлайн", "deadline"]:
+    elif target2.lower() in ["дедлайн", "deadline"]:
         response += "\nБеги."
-    elif target2 and target2.lower() in ["выходные", "weekend"]:
+    elif target2.lower() in ["выходные", "weekend"]:
         response += "\nПочти дома."
-    elif target2 and target2.lower() in ["wi-fi", "wifi"]:
+    elif target2.lower() in ["wi-fi", "wifi"]:
         response += "\nБез связи никак."
-    elif target2 and target2.lower() in ["бот", "bot"]:
+    elif target2.lower() in ["бот", "bot"]:
         response += "\nОн всего лишь код."
 
-    # Цифровая пасхалка
     digit_egg = get_digit_easter_egg(percent)
     if digit_egg:
         response += f"\n{digit_egg}"
 
-    # Временная пасхалка
     time_egg = get_time_easter_egg()
     if time_egg:
         response += f"\n{time_egg}"
 
-    # Датовая пасхалка
     date_egg = get_date_easter_egg()
     if date_egg == "valentine":
         response += "\nСегодня всё возможно."
     elif date_egg == "halloween":
         response += "\nТыква смотрит."
 
-    # Спам шиппера
     if spam_text:
         response += f"\n{spam_text}"
 
-    await bot.edit_message_text(response, chat_id, msg.message_id)
+    await msg.edit_text(response)
 
 
-async def dice_command(chat_id, user_id):
+async def dice_command(message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
     if is_cooldown(user_id):
-        msg = await bot.send_message(chat_id, "Подожди 3 секунды.")
+        msg = await message.answer("Подожди 3 секунды.")
         await asyncio.sleep(5)
-        try:
-            await bot.delete_message(chat_id, msg.message_id)
-        except TelegramError:
-            pass
+        await msg.delete()
         return
 
-    # Анимация куба: 7 кадров
     dice_faces = [
         "┌───────┐\n│ ●     │\n│       │\n│     ● │\n└───────┘",
         "┌───────┐\n│ ●   ● │\n│       │\n│ ●   ● │\n└───────┘",
@@ -445,16 +511,12 @@ async def dice_command(chat_id, user_id):
     ]
 
     result = random.randint(1, 6)
-    msg = await bot.send_message(chat_id, "🎲 КУБ\n\nКручу...")
+    msg = await message.answer("🎲 КУБ\n\nКручу...")
 
-    for i, face in enumerate(dice_faces):
+    for face in dice_faces:
         await asyncio.sleep(0.25)
-        try:
-            await bot.edit_message_text(f"🎲 КУБ\n\n{face}\n\nКручу...", chat_id, msg.message_id)
-        except TelegramError:
-            pass
+        await msg.edit_text(f"🎲 КУБ\n\n{face}\n\nКручу...")
 
-    # Финальный кадр
     response = f"🎲 КУБ — РЕЗУЛЬТАТ\n\n{dice_faces[result-1]}\n\nВыпало: {result}"
 
     if result == 6:
@@ -462,39 +524,34 @@ async def dice_command(chat_id, user_id):
     elif result == 1:
         response += "\nМинимум."
 
-    # Цифровая пасхалка
     digit_egg = get_digit_easter_egg(result)
     if digit_egg:
         response += f"\n{digit_egg}"
 
-    # Временная пасхалка
     time_egg = get_time_easter_egg()
     if time_egg:
         response += f"\n{time_egg}"
 
-    await bot.edit_message_text(response, chat_id, msg.message_id)
+    await msg.edit_text(response)
 
 
-async def slot_command(chat_id, user_id):
+async def slot_command(message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
     if is_cooldown(user_id):
-        msg = await bot.send_message(chat_id, "Подожди 3 секунды.")
+        msg = await message.answer("Подожди 3 секунды.")
         await asyncio.sleep(5)
-        try:
-            await bot.delete_message(chat_id, msg.message_id)
-        except TelegramError:
-            pass
+        await msg.delete()
         return
 
     symbols = ["7️⃣", "🍒", "🍍", "🍏", "🍆", "💣"]
-
-    # Спиним три барабана
     s1 = random.choice(symbols)
     s2 = random.choice(symbols)
     s3 = random.choice(symbols)
 
-    msg = await bot.send_message(chat_id, "🎰 СЛОТЫ\n\n[🎰] [❓] [❓]\n\nКручу...")
+    msg = await message.answer("🎰 СЛОТЫ\n\n[🎰] [❓] [❓]\n\nКручу...")
 
-    # Анимация
     for i in range(3):
         await asyncio.sleep(0.35)
         spin_state = ["[❓]", "[❓]", "[❓]"]
@@ -504,25 +561,14 @@ async def slot_command(chat_id, user_id):
         if i >= 2:
             spin_state[1] = f"[{s2}]"
         text = f"🎰 СЛОТЫ\n\n{spin_state[0]} {spin_state[1]} {spin_state[2]}\n\nКручу..."
-        try:
-            await bot.edit_message_text(text, chat_id, msg.message_id)
-        except TelegramError:
-            pass
-
-    # Замедление
-    await asyncio.sleep(0.35)
-    try:
-        await bot.edit_message_text(f"🎰 СЛОТЫ\n\n[{s1}] [{s2}] [🎰]\n\nЗамедляются...", chat_id, msg.message_id)
-    except TelegramError:
-        pass
+        await msg.edit_text(text)
 
     await asyncio.sleep(0.35)
-    try:
-        await bot.edit_message_text(f"🎰 СЛОТЫ\n\n[{s1}] [{s2}] [{s3}]\n\nПочти...", chat_id, msg.message_id)
-    except TelegramError:
-        pass
+    await msg.edit_text(f"🎰 СЛОТЫ\n\n[{s1}] [{s2}] [🎰]\n\nЗамедляются...")
 
-    # Результат
+    await asyncio.sleep(0.35)
+    await msg.edit_text(f"🎰 СЛОТЫ\n\n[{s1}] [{s2}] [{s3}]\n\nПочти...")
+
     await asyncio.sleep(0.35)
 
     if "💣" in [s1, s2, s3]:
@@ -537,16 +583,18 @@ async def slot_command(chat_id, user_id):
     else:
         response = f"🎰 СЛОТЫ — РЕЗУЛЬТАТ\n\n[{s1}] [{s2}] [{s3}]\n\n😐 Ни одного совпадения."
 
-    # Временная пасхалка
     time_egg = get_time_easter_egg()
     if time_egg:
         response += f"\n{time_egg}"
 
-    await bot.edit_message_text(response, chat_id, msg.message_id)
+    await msg.edit_text(response)
 
 
-async def special_67(chat_id, user_id, username=""):
-    """Спецрежим 67 — анимация 15 секунд."""
+async def special_67(message: Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    username = message.from_user.username or ""
+
     frames = [
         "Шесть...",
         "Шесть... ☝️",
@@ -560,173 +608,78 @@ async def special_67(chat_id, user_id, username=""):
         "🤲 Шесть-семь. 67.",
     ]
 
-    msg = await bot.send_message(chat_id, frames[0])
+    msg = await message.answer(frames[0])
 
     for i, frame in enumerate(frames[1:], 1):
         await asyncio.sleep(1.5)
-        try:
-            text = frame
-            if i == len(frames) - 1 and username and chat_id != user_id:
-                text = f"@{username}: {frame}"
-            await bot.edit_message_text(text, chat_id, msg.message_id)
-        except TelegramError:
-            pass
+        text = frame
+        if i == len(frames) - 1 and username and chat_id != user_id:
+            text = f"@{username}: {frame}"
+        await msg.edit_text(text)
 
 
-def generate_fish_text(length=20):
-    """Генерирует случайную строку из букв, цифр и символов."""
-    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:,.<>?/~`"
-    return ''.join(random.choice(chars) for _ in range(length))
-
-
-async def fish_command(chat_id):
-    """Пасхалка 'рыба' — генерация случайной строки."""
+async def fish_command(message: Message):
     fish_text = generate_fish_text(random.randint(15, 40))
-    await bot.send_message(chat_id, fish_text)
+    await message.answer(fish_text)
 
 
-# ==================== ОБРАБОТКА СООБЩЕНИЙ ====================
+# ==================== ОБРАБОТЧИК ВСЕХ ТЕКСТОВЫХ СООБЩЕНИЙ ====================
 
-async def handle_message(update):
-    """Обработчик входящих сообщений."""
-    if not update.message or not update.message.text:
-        return
+@dp.message(F.text)
+async def handle_text(message: Message):
+    text = message.text.strip()
+    user_id = message.from_user.id
+    chat_id = message.chat.id
 
-    text = update.message.text.strip()
-    chat_id = update.message.chat_id
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username or ""
-
-    # Проверка: просто "67"
+    # "67" — спецрежим
     if text == "67":
-        await special_67(chat_id, user_id, username)
+        await special_67(message)
         return
 
-    # Проверка: "рыба"
+    # "рыба"
     if text.lower() == "рыба":
-        await fish_command(chat_id)
-        return
-
-    # Меню
-    if text in ["/menu", "меню"]:
-        keyboard = [
-            [InlineKeyboardButton("🪙 Монетка", callback_data="flip"),
-             InlineKeyboardButton("🔢 Число", callback_data="num")],
-            [InlineKeyboardButton("💘 Шипперим", callback_data="ship"),
-             InlineKeyboardButton("🎲 Куб", callback_data="dice")],
-            [InlineKeyboardButton("🎰 Слоты", callback_data="slot")],
-        ]
-        await bot.send_message(chat_id, "🎲 RND BOT", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    # Монетка: /flip, монетка, монета
-    if text in ["/flip", "монетка", "монета"]:
-        await flip_command(chat_id, user_id)
+        await fish_command(message)
         return
 
     # Монетка с параметрами
-    if text.startswith("монетка ") or text.startswith("/flip "):
-        extra = text.split(" ", 1)[1] if " " in text else ""
-
-        # Пасхалки
+    if text.startswith("монетка "):
+        extra = text[8:]
         if extra == "честно":
-            msg = await bot.send_message(chat_id, "Ребро.\nЧестно.")
+            await message.answer("Ребро.\nЧестно.")
             return
         elif extra == "судьба":
-            msg = await bot.send_message(chat_id, "Орёл.\nСудьба не спрашивает.")
+            await message.answer("Орёл.\nСудьба не спрашивает.")
             return
         elif extra == "жизнь":
-            msg = await bot.send_message(chat_id, "Орёл.\nЖиви.")
+            await message.answer("Орёл.\nЖиви.")
             return
         elif extra == "любовь":
-            msg = await bot.send_message(chat_id, "Решка.\nЛюби.")
+            await message.answer("Решка.\nЛюби.")
             return
         elif extra.startswith("или "):
             options = extra[4:].split()
             choice = options[0] if options else "первое"
-            msg = await bot.send_message(chat_id, f"Орёл.\n{choice}.")
+            await message.answer(f"Орёл.\n{choice}.")
             return
 
-        # По умолчанию — простой бросок
-        await flip_command(chat_id, user_id)
+    # Число с диапазоном
+    match = re.match(r"(?:/num|рандом число)\s+(.+)", text)
+    if match:
+        await num_command(message, match.group(1))
         return
 
-    # Число
-    if text == "/num" or text == "рандом число":
-        await num_command(chat_id, user_id, 1, 100)
-        return
-
-    # Число с диапазоном: /num 5-56, рандом число 5-56, рандом число 10 200
-    num_pattern = r"(?:/num|рандом число)\s+(-?\d+)[-\s](-?\d+)"
-    num_match = re.match(num_pattern, text)
-    if num_match:
-        min_val = int(num_match.group(1))
-        max_val = int(num_match.group(2))
-        await num_command(chat_id, user_id, min_val, max_val)
-        return
-
-    # Числовые пасхалки
-    if text.startswith("рандом число "):
-        extra = text[len("рандом число "):]
-        if "сколько мне лет" in extra:
-            msg = await bot.send_message(chat_id, "Число: 27. Столько.")
-            return
-        elif "когда женюсь" in extra:
-            msg = await bot.send_message(chat_id, "Число: 2031. Жди.")
-            return
-        elif "сколько заработаю" in extra:
-            msg = await bot.send_message(chat_id, "Число: 300. Тысяч.")
-            return
-        elif "в чём смысл" in extra or "в чем смысл" in extra:
-            msg = await bot.send_message(chat_id, "Число: 42. Ответ на главный вопрос.")
-            return
-        elif extra in ["1-1", "1 1"]:
-            msg = await bot.send_message(chat_id, "Число: 1. Выбора не было.")
-            return
-        elif extra in ["1-2", "1 2"]:
-            msg = await bot.send_message(chat_id, "Число: 2. Мог бы монетку кинуть.")
-            return
-
-    # Шипперим: /ship, шипперим, шип
-    if text in ["/ship", "шипперим", "шип"]:
-        await ship_command(chat_id, user_id)
-        return
-
-    # Шипперим с тегами
-    ship_pattern = r"(?:/ship|шипперим|шип)\s+(@?\S+)(?:\s+(@?\S+))?"
-    ship_match = re.match(ship_pattern, text)
-    if ship_match:
-        target1 = ship_match.group(1)
-        target2 = ship_match.group(2) if ship_match.group(2) else None
-        await ship_command(chat_id, user_id, target1, target2)
-        return
-
-    # Куб: /dice, куб, кубик
-    if text in ["/dice", "куб", "кубик"]:
-        await dice_command(chat_id, user_id)
-        return
-
-    # Слоты: /slot, слоты, крутить
-    if text in ["/slot", "слоты", "крутить"]:
-        await slot_command(chat_id, user_id)
+    # Шипперим с параметрами
+    match = re.match(r"(?:/ship|шипперим|шип)\s+(.+)", text)
+    if match:
+        await ship_command(message, match.group(1))
         return
 
 
 # ==================== ЗАПУСК ====================
 
 async def main():
-    """Основной цикл бота."""
-    print("RND Bot запущен!")
-    offset = 0
-    while True:
-        try:
-            updates = await bot.get_updates(offset=offset, timeout=30)
-            for update in updates:
-                await handle_message(update)
-                offset = update.update_id + 1
-        except Exception as e:
-            print(f"Ошибка: {e}")
-            await asyncio.sleep(5)
+    print("RND Bot запущен на aiogram!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
