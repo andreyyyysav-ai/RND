@@ -5,7 +5,7 @@ import re
 import os
 from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
@@ -122,6 +122,15 @@ def get_rare_easter_egg():
         return "double"
     return ""
 
+def glitch_text(text):
+    """Добавляет глитч-эффект к строке."""
+    if not text:
+        return text
+    pos = random.randint(0, len(text) - 1)
+    glitch_char = random.choice("̷̴̵̶̷̸̨̡̢̧̡̢̧̨̛̖̗̘̙̜̝̞̟̠̣̤̥̦̩̪̫̬̭̮̯̰̱̲̳̹̺̻̼̽̾̿̚")
+    # Вставляем combining character после случайного символа
+    return text[:pos+1] + glitch_char + text[pos+1:]
+
 def update_coin_history(user_id, result):
     if user_id not in user_coin_history:
         user_coin_history[user_id] = []
@@ -214,7 +223,7 @@ async def cb_flip(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "num")
 async def cb_num(callback: types.CallbackQuery):
     await callback.answer()
-    await num_command(callback.message, "1-100")
+    await num_command(callback.message, "")
 
 @dp.callback_query(F.data == "ship")
 async def cb_ship(callback: types.CallbackQuery):
@@ -237,14 +246,12 @@ async def cmd_flip(message: Message):
     await flip_command(message)
 
 @dp.message(Command("num"))
-@dp.message(F.text == "рандом число")
-async def cmd_num(message: Message):
-    await num_command(message, "1-100")
+async def cmd_num(message: Message, command: CommandObject):
+    await num_command(message, command.args or "")
 
 @dp.message(Command("ship"))
-@dp.message(F.text.in_(["шипперим", "шип"]))
-async def cmd_ship(message: Message):
-    await ship_command(message, "")
+async def cmd_ship(message: Message, command: CommandObject):
+    await ship_command(message, command.args or "")
 
 @dp.message(Command("dice"))
 @dp.message(F.text.in_(["куб", "кубик"]))
@@ -311,6 +318,9 @@ async def flip_command(message: Message):
 
     if rare == "caps":
         response = response.upper()
+    elif rare == "glitch":
+        response = glitch_text(response)
+        response += "\nG̷l̷i̷t̷c̷h̷.̷.̷."
 
     await msg.edit_text(response)
 
@@ -334,7 +344,16 @@ async def num_command(message: Message, args_text=""):
         min_val = int(match.group(1))
         max_val = int(match.group(2))
     else:
-        min_val, max_val = 1, 100
+        # Проверяем, не одно ли число (как верхняя граница)
+        single_match = re.match(r"(-?\d+)$", args_text.strip())
+        if single_match:
+            num = int(single_match.group(1))
+            if num >= 0:
+                min_val, max_val = 1, num
+            else:
+                min_val, max_val = 1, abs(num)  # /num -50 -> 1-50
+        else:
+            min_val, max_val = 1, 100
 
     if min_val > max_val:
         min_val, max_val = max_val, min_val
@@ -389,6 +408,9 @@ async def num_command(message: Message, args_text=""):
 
     if rare == "caps":
         response = response.upper()
+    elif rare == "glitch":
+        response = glitch_text(response)
+        response += "\nG̷l̷i̷t̷c̷h̷.̷.̷."
 
     await msg.edit_text(response)
 
@@ -409,19 +431,23 @@ async def ship_command(message: Message, args_text=""):
 
     spam_text = update_ship_timestamps(user_id)
 
-    msg = await message.answer("💘 ШИППЕРИМ")
-
     # Парсим имена
     parts = args_text.split()
-    if parts:
+    if parts and len(parts) < 2:
+        await message.answer("Нужно два имени через пробел для шипа.")
+        return
+    elif parts:
         name1 = parts[0].lstrip("@")
-        name2 = parts[1] if len(parts) > 1 else f"user_{random.randint(1000, 9999)}"
+        name2 = parts[1].lstrip("@")
     else:
         name1 = f"user_{random.randint(1000, 9999)}"
         name2 = f"user_{random.randint(1000, 9999)}"
 
-    target1 = parts[0] if parts else ""
-    target2 = parts[1] if len(parts) > 1 else ""
+    # Оригинальные строки с @ для сообщения
+    target1 = parts[0] if parts else name1
+    target2 = parts[1] if len(parts) > 1 else name2
+
+    msg = await message.answer("💘 ШИППЕРИМ")
 
     if target1 and target2 and target1.lower() == target2.lower():
         percent = 100
@@ -662,14 +688,14 @@ async def handle_text(message: Message):
             await message.answer(f"Орёл.\n{choice}.")
             return
 
-    # Число с диапазоном
-    match = re.match(r"(?:/num|рандом число)\s+(.+)", text)
+    # Число с диапазоном (текстовая команда "рандом число ...")
+    match = re.match(r"рандом число\s+(.+)", text)
     if match:
         await num_command(message, match.group(1))
         return
 
     # Шипперим с параметрами
-    match = re.match(r"(?:/ship|шипперим|шип)\s+(.+)", text)
+    match = re.match(r"(?:шипперим|шип)\s+(.+)", text)
     if match:
         await ship_command(message, match.group(1))
         return
